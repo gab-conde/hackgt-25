@@ -1,3 +1,5 @@
+""" Test for camera functionality by displaying images on a flask server. """u
+
 # Libraries for PI
 from flask import Flask, Response
 from picamera2 import Picamera2
