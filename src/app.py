@@ -1,31 +1,26 @@
-import time
-import cv2
+# app.py (sketch)
+import time, cv2
 from picamera2 import Picamera2
+from full_pipeline_gdino_sam_da2 import init_pipeline, analyze_bgr_frame
 
-# initialize camera
-camera = Picamera2()
-camera_config = camera.create_preview_configuration()
-camera.configure(camera_config)
+# init models once
+models = init_pipeline()  # or init_pipeline(device="cpu")
 
-# start camera
-camera.start()
-
-# allow camera time to stabilize
+cam = Picamera2()
+cfg = cam.create_preview_configuration()
+cam.configure(cfg)
+cam.start()
 time.sleep(2)
 
-# capture images
-for i in range(2):  # do 2 images for demo purposes
-    # capture frame as numpy arrary
-    frame = camera.capture_array("main")
-    # correct the color map
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGBA)
-    # print(frame.shape)
+for i in range(2):
+    frame = cam.capture_array("main")            # BGR numpy array
+    # (optional) fix color if needed:
+    # frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)  # only if your stream is RGBA
 
-    # encode image to jpg format
-    # success_flag, buffer = cv2.imencode('.jpg', frame)
+    summary, results, rows = analyze_bgr_frame(frame, models, save_prefix=None)
+    # 'summary' is exactly: [{name, volume_cm3, grams}, ...]
 
-    # use to write file for testing
-    # cv2.imwrite(f"image{i}.jpg", frame)
+    print("[FINAL]", summary)  # e.g. [{'name': 'hamburger bun', 'volume_cm3': 226.3, 'grams': 181.0}]
 
-    # wait for new plate to enter frame - 10 seconds
+    # wait for next plate
     time.sleep(10)
