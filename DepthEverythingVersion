@@ -8,7 +8,7 @@ import numpy as np
 import torch
 import cv2
 from PIL import Image, ImageDraw, ImageFont
-from photo_socket import get_new_image
+from photo_socket import *
 
 DA2_REPO_DIR = "/Users/albertzheng/PyCharmMiscProject/Depth-Anything-V2"
 if os.path.isdir(DA2_REPO_DIR) and DA2_REPO_DIR not in sys.path:
@@ -873,9 +873,7 @@ def main():
     print(f"[INFO] device: {device}")
 
     # initiate connection with pi
-    ps = PhotoServer() 
-
-    for loop in range():
+    for loop in range(2):
 
         # request image from pi
         IMG_SRC = get_new_image()
