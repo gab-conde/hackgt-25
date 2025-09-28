@@ -8,6 +8,7 @@ import numpy as np
 import torch
 import cv2
 from PIL import Image, ImageDraw, ImageFont
+from photo_socket import get_new_image
 
 DA2_REPO_DIR = "/Users/albertzheng/PyCharmMiscProject/Depth-Anything-V2"
 if os.path.isdir(DA2_REPO_DIR) and DA2_REPO_DIR not in sys.path:
@@ -30,7 +31,7 @@ except Exception:
 from depth_anything_v2.dpt import DepthAnythingV2
 
 # ===================== PATHS / ASSETS =====================
-IMG_SRC = "/Users/albertzheng/Downloads/hot_dog.jpg"  # <-- your image
+# IMG_SRC = "/Users/albertzheng/Downloads/hot_dog.jpg"  # <-- your image
 
 GDINO_CFG = "/Users/albertzheng/PyCharmMiscProject/weights/GroundingDINO_SwinT_OGC.cfg.py"
 GDINO_WEIGHTS = "/Users/albertzheng/PyCharmMiscProject/weights/groundingdino_swint_ogc.pth"
@@ -871,231 +872,243 @@ def main():
     device = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
     print(f"[INFO] device: {device}")
 
-    # Load image
-    image = load_image(IMG_SRC)
-    bgr   = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+    # initiate connection with pi
+    ps = PhotoServer() 
 
-    # 1) Detections
-    # 1) Detections
-    gdino = Detector(GDINO_CFG, GDINO_WEIGHTS)
-    dets = gdino.detect(bgr, classes=CLASSES, box_thr=BOX_THR, text_thr=TEXT_THR)
-    dets = [coerce_cookie_label_if_small(d) for d in dets]
-    print(f"[INFO] {len(dets)} raw detections")
-    for d in dets:
-        print(f"  - {d['label']}  {d['score']:.2f}  {d['box']}")
+    for loop in range():
 
-    # 2) Plate scale + circle (we need cm/px before shape-based coercion)
-    plate_box, cm_per_px, plate_circle = get_plate_scale_and_circle_from_dets(image, dets, PLATE_DIAM_CM)
-    if plate_circle is None and plate_box is not None:
-        plate_circle = bbox_to_circle(plate_box)
-    plate_box_for_draw = plate_box
+        # request image from pi
+        IMG_SRC = get_new_image()
+        if not IMG_SRC:
+            print("Failed to get image from Pi")
+            return
 
-    # 2b) Coerce generic "object" boxes into bun types *using geometry*
-    dets = [coerce_bun_label_by_shape(d, cm_per_px) for d in dets]
 
-    # 2c) Now drop the truly generic leftovers
-    dets = [d for d in dets if d["label"].lower() not in GENERIC]
+        # Load image
+        image = load_image(IMG_SRC)
+        bgr   = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
 
-    # 3) Remove plate-like non-plate
-    if plate_box is not None:
-        dets = [d for d in dets if not (is_plate_like(d, plate_box) and "plate" not in d["label"].lower())]
+        # 1) Detections
+        # 1) Detections
+        gdino = Detector(GDINO_CFG, GDINO_WEIGHTS)
+        dets = gdino.detect(bgr, classes=CLASSES, box_thr=BOX_THR, text_thr=TEXT_THR)
+        dets = [coerce_cookie_label_if_small(d) for d in dets]
+        print(f"[INFO] {len(dets)} raw detections")
+        for d in dets:
+            print(f"  - {d['label']}  {d['score']:.2f}  {d['box']}")
 
-    # 4) Two-stage NMS: within-label then cross-label
-    dets = multi_label_nms(dets, iou_within=0.5, iou_cross=0.85)
+        # 2) Plate scale + circle (we need cm/px before shape-based coercion)
+        plate_box, cm_per_px, plate_circle = get_plate_scale_and_circle_from_dets(image, dets, PLATE_DIAM_CM)
+        if plate_circle is None and plate_box is not None:
+            plate_circle = bbox_to_circle(plate_box)
+        plate_box_for_draw = plate_box
 
-    print(f"[INFO] {len(dets)} detections after two-stage NMS")
-    for d in dets:
-        print(f"  - {d['label']}  {d['score']:.2f}  {d['box']}")
+        # 2b) Coerce generic "object" boxes into bun types *using geometry*
+        dets = [coerce_bun_label_by_shape(d, cm_per_px) for d in dets]
 
-    # 5) SAM masks (REQUIRED)
-    if not USE_SAM:
-        raise RuntimeError("This pipeline requires SAM masks. Set USE_SAM=True and provide a valid checkpoint.")
-    predictor = load_sam(SAM_MODEL_TYPE, SAM_CKPT, device=device)
-    masks = masks_from_sam(predictor, bgr, dets, pad_px=6, close_px=3, erode_px=1, min_area=64)
+        # 2c) Now drop the truly generic leftovers
+        dets = [d for d in dets if d["label"].lower() not in GENERIC]
 
-    # Build a list of food masks (exclude plate/dish) for zero-centering & rim calibration
-    food_masks_for_zero = []
-    for d, m in zip(dets, masks):
-        if m is None:
-            continue
-        lab = d["label"].lower()
-        if "plate" in lab or "dish" in lab:
-            continue
-        food_masks_for_zero.append(m)
+        # 3) Remove plate-like non-plate
+        if plate_box is not None:
+            dets = [d for d in dets if not (is_plate_like(d, plate_box) and "plate" not in d["label"].lower())]
 
-    # 6) Depth-Anything V2 relative depth
-    t0 = time.time()
-    depth_rel = da2_infer_depth(image, model_type=DA2_MODEL_TYPE, ckpt=DA2_CKPT, device=device)
-    print(f"[INFO] Depth-Anything inference took {(time.time()-t0)*1000:.1f} ms")
+        # 4) Two-stage NMS: within-label then cross-label
+        dets = multi_label_nms(dets, iou_within=0.5, iou_cross=0.85)
 
-    # 7) Height map from plate plane (zero-centered, unscaled)
-    h_zero, plate_mask, clean_plate_mask = height_map_from_plate(
-        depth_rel, plate_circle, cm_per_px, food_masks=food_masks_for_zero
-    )
+        print(f"[INFO] {len(dets)} detections after two-stage NMS")
+        for d in dets:
+            print(f"  - {d['label']}  {d['score']:.2f}  {d['box']}")
 
-    # --- auto-fix sign BEFORE any clipping ---
-    h_zero, flipped, diag = auto_fix_sign(h_zero, plate_circle, clean_plate_mask, food_masks_for_zero)
-    print(f"[SIGN] base_med={diag['base_med']:.6f} rim_p90={diag['rim_p90']:.6f} "
-          f"food_med={diag['food_med']:.6f}  flipped={'YES' if flipped else 'no'}")
+        # 5) SAM masks (REQUIRED)
+        if not USE_SAM:
+            raise RuntimeError("This pipeline requires SAM masks. Set USE_SAM=True and provide a valid checkpoint.")
+        predictor = load_sam(SAM_MODEL_TYPE, SAM_CKPT, device=device)
+        masks = masks_from_sam(predictor, bgr, dets, pad_px=6, close_px=3, erode_px=1, min_area=64)
 
-    # 7b) REQUIRED: scale to metric via plate rim height (mm). If it fails, fallback to 1.0.
-    try:
-        s_mm_per_unit, h_zero = calibrate_scale_from_plate_rim_crest(
-            h_zero, plate_circle, clean_plate_mask, food_masks_for_zero,
-            KNOWN_RIM_MM, r_inner=0.88, r_outer=0.97, use_top_frac=0.02
+        # Build a list of food masks (exclude plate/dish) for zero-centering & rim calibration
+        food_masks_for_zero = []
+        for d, m in zip(dets, masks):
+            if m is None:
+                continue
+            lab = d["label"].lower()
+            if "plate" in lab or "dish" in lab:
+                continue
+            food_masks_for_zero.append(m)
+
+        # 6) Depth-Anything V2 relative depth
+        t0 = time.time()
+        depth_rel = da2_infer_depth(image, model_type=DA2_MODEL_TYPE, ckpt=DA2_CKPT, device=device)
+        print(f"[INFO] Depth-Anything inference took {(time.time()-t0)*1000:.1f} ms")
+
+        # 7) Height map from plate plane (zero-centered, unscaled)
+        h_zero, plate_mask, clean_plate_mask = height_map_from_plate(
+            depth_rel, plate_circle, cm_per_px, food_masks=food_masks_for_zero
         )
-        print(f"[INFO] Plate-rim calibration scale = {s_mm_per_unit:.3f} mm/unit")
 
-        print(f"[INFO] Plate-rim calibration scale = {s_mm_per_unit:.3f} mm/unit")
-    except Exception as e:
-        print(f"[WARN] Rim calibration failed: {e}. Using fallback scale 1.0 mm/unit.")
-        s_mm_per_unit = 1.0
+        # --- auto-fix sign BEFORE any clipping ---
+        h_zero, flipped, diag = auto_fix_sign(h_zero, plate_circle, clean_plate_mask, food_masks_for_zero)
+        print(f"[SIGN] base_med={diag['base_med']:.6f} rim_p90={diag['rim_p90']:.6f} "
+            f"food_med={diag['food_med']:.6f}  flipped={'YES' if flipped else 'no'}")
 
-    # 7c) Convert to meters and lightly clip (pos only)
-    h_m = (h_zero * s_mm_per_unit) / 1000.0  # meters
-    print(f"[DBG] h_m pre-clip min/max: {np.nanmin(h_m):.6f}/{np.nanmax(h_m):.6f}")
-    h_m = np.clip(h_m, 0.0, GLOBAL_SAFETY_HMAX_M)
-    print(f"[DBG] h_m post-clip min/max: {np.nanmin(h_m):.6f}/{np.nanmax(h_m):.6f}")
+        # 7b) REQUIRED: scale to metric via plate rim height (mm). If it fails, fallback to 1.0.
+        try:
+            s_mm_per_unit, h_zero = calibrate_scale_from_plate_rim_crest(
+                h_zero, plate_circle, clean_plate_mask, food_masks_for_zero,
+                KNOWN_RIM_MM, r_inner=0.88, r_outer=0.97, use_top_frac=0.02
+            )
+            print(f"[INFO] Plate-rim calibration scale = {s_mm_per_unit:.3f} mm/unit")
 
-    # 8) Save raw depth + height previews
-    out_prefix = os.path.splitext(IMG_SRC)[0]
-    save_depth_visuals(depth_rel, h_m, out_prefix)
-    print(f"[INFO] Depth/height saved as {out_prefix}_depth.npy/png and {out_prefix}_height.npy/png")
+            print(f"[INFO] Plate-rim calibration scale = {s_mm_per_unit:.3f} mm/unit")
+        except Exception as e:
+            print(f"[WARN] Rim calibration failed: {e}. Using fallback scale 1.0 mm/unit.")
+            s_mm_per_unit = 1.0
 
-    # 9) Integrate per detection; export CSV + mask PNGs
-    # 9) Integrate per detection; export CSV + mask PNGs
-    rows = []
-    results = []
+        # 7c) Convert to meters and lightly clip (pos only)
+        h_m = (h_zero * s_mm_per_unit) / 1000.0  # meters
+        print(f"[DBG] h_m pre-clip min/max: {np.nanmin(h_m):.6f}/{np.nanmax(h_m):.6f}")
+        h_m = np.clip(h_m, 0.0, GLOBAL_SAFETY_HMAX_M)
+        print(f"[DBG] h_m post-clip min/max: {np.nanmin(h_m):.6f}/{np.nanmax(h_m):.6f}")
 
-    # constants for local ring (in cm)
-    ring_out_cm = 1.5
-    ring_in_cm = 0.5
-    min_ring_samples = 200
+        # 8) Save raw depth + height previews
+        out_prefix = os.path.splitext(IMG_SRC)[0]
+        save_depth_visuals(depth_rel, h_m, out_prefix)
+        print(f"[INFO] Depth/height saved as {out_prefix}_depth.npy/png and {out_prefix}_height.npy/png")
 
-    # precompute a wide plate mask (≤ 0.98 * R) so the ring can see the crest
-    H, W = h_m.shape
-    cx, cy, r = plate_circle
-    yy, xx = np.mgrid[0:H, 0:W]
-    plate_mask_wide = (xx - cx) ** 2 + (yy - cy) ** 2 <= int((r * 0.98) ** 2)
+        # 9) Integrate per detection; export CSV + mask PNGs
+        # 9) Integrate per detection; export CSV + mask PNGs
+        rows = []
+        results = []
 
-    for i, (d, mask) in enumerate(zip(dets, masks)):
-        lab = d["label"].lower()
-        if "plate" in lab or "dish" in lab:
-            continue
+        # constants for local ring (in cm)
+        ring_out_cm = 1.5
+        ring_in_cm = 0.5
+        min_ring_samples = 200
 
-        # --- guard mask ---
-        if mask is None:
-            print(f"[WARN] mask is None for {d['label']} (idx={i}); skipping")
-            continue
-        mask = np.asarray(mask, dtype=bool)
-        if mask.size == 0 or mask.sum() == 0:
-            print(f"[WARN] empty mask for {d['label']} (idx={i}); skipping")
-            continue
+        # precompute a wide plate mask (≤ 0.98 * R) so the ring can see the crest
+        H, W = h_m.shape
+        cx, cy, r = plate_circle
+        yy, xx = np.mgrid[0:H, 0:W]
+        plate_mask_wide = (xx - cx) ** 2 + (yy - cy) ** 2 <= int((r * 0.98) ** 2)
 
-        # distance transform from object (so ring excludes object)
-        inv = (~mask).astype(np.uint8) * 255
-        dist = cv2.distanceTransform(inv, cv2.DIST_L2, 3)
+        for i, (d, mask) in enumerate(zip(dets, masks)):
+            lab = d["label"].lower()
+            if "plate" in lab or "dish" in lab:
+                continue
 
-        # ring in pixels
-        ring_out_px = int(round(ring_out_cm / cm_per_px))
-        ring_in_px = int(round(ring_in_cm / cm_per_px))
-        ring = (dist > ring_in_px) & (dist <= ring_out_px)
-        # restrict to wide plate mask so we can include the crest neighborhood
-        ring &= plate_mask_wide
+            # --- guard mask ---
+            if mask is None:
+                print(f"[WARN] mask is None for {d['label']} (idx={i}); skipping")
+                continue
+            mask = np.asarray(mask, dtype=bool)
+            if mask.size == 0 or mask.sum() == 0:
+                print(f"[WARN] empty mask for {d['label']} (idx={i}); skipping")
+                continue
 
-        ring_vals = h_m[ring]
-        if ring_vals.size < min_ring_samples:
-            # widen once if too few samples
-            ring_out_px_wide = int(round(max(ring_out_px, ring_in_px + 10) * 1.5))
-            ring = (dist > ring_in_px) & (dist <= ring_out_px_wide) & plate_mask_wide
+            # distance transform from object (so ring excludes object)
+            inv = (~mask).astype(np.uint8) * 255
+            dist = cv2.distanceTransform(inv, cv2.DIST_L2, 3)
+
+            # ring in pixels
+            ring_out_px = int(round(ring_out_cm / cm_per_px))
+            ring_in_px = int(round(ring_in_cm / cm_per_px))
+            ring = (dist > ring_in_px) & (dist <= ring_out_px)
+            # restrict to wide plate mask so we can include the crest neighborhood
+            ring &= plate_mask_wide
+
             ring_vals = h_m[ring]
+            if ring_vals.size < min_ring_samples:
+                # widen once if too few samples
+                ring_out_px_wide = int(round(max(ring_out_px, ring_in_px + 10) * 1.5))
+                ring = (dist > ring_in_px) & (dist <= ring_out_px_wide) & plate_mask_wide
+                ring_vals = h_m[ring]
 
-        baseline = float(np.median(ring_vals)) if ring_vals.size else 0.0
-        # --- DEBUG: print baseline minus cookie med, so you can see subtraction working
-        cookie_med = float(np.median(h_m[mask])) if mask.sum() else 0.0
-        print(f"[DBG][{i}] {d['label']}: cm/px={cm_per_px:.4f}, ring_in_px={ring_in_px}, "
-              f"ring_out_px={ring_out_px}, ring_samples={ring_vals.size}, "
-              f"baseline_med={baseline * 1000:.1f} mm, cookie_med_global={cookie_med * 1000:.1f} mm")
+            baseline = float(np.median(ring_vals)) if ring_vals.size else 0.0
+            # --- DEBUG: print baseline minus cookie med, so you can see subtraction working
+            cookie_med = float(np.median(h_m[mask])) if mask.sum() else 0.0
+            print(f"[DBG][{i}] {d['label']}: cm/px={cm_per_px:.4f}, ring_in_px={ring_in_px}, "
+                f"ring_out_px={ring_out_px}, ring_samples={ring_vals.size}, "
+                f"baseline_med={baseline * 1000:.1f} mm, cookie_med_global={cookie_med * 1000:.1f} mm")
 
-        # --- per-object local baseline (meters): subtract baseline everywhere, then clip
-        h_local = h_m - baseline
-        h_local = np.clip(h_local, 0.0, GLOBAL_SAFETY_HMAX_M)
+            # --- per-object local baseline (meters): subtract baseline everywhere, then clip
+            h_local = h_m - baseline
+            h_local = np.clip(h_local, 0.0, GLOBAL_SAFETY_HMAX_M)
 
-        # --- stats from LOCAL heights ---
-        stats = object_depth_stats(depth_rel, h_local, mask)
+            # --- stats from LOCAL heights ---
+            stats = object_depth_stats(depth_rel, h_local, mask)
 
-        # --- robust volume from LOCAL heights ---
-        vol = integrate_volume_cm3_over_mask_robust(
-            h_local, mask, cm_per_px, p_hi=97.0, huber_k=2.5
-        )
-        if not np.isfinite(vol):
-            print(f"[WARN] non-finite volume for {d['label']} (idx={i}); skipping")
-            continue
-        g = estimate_grams(vol, d["label"])
+            # --- robust volume from LOCAL heights ---
+            vol = integrate_volume_cm3_over_mask_robust(
+                h_local, mask, cm_per_px, p_hi=97.0, huber_k=2.5
+            )
+            if not np.isfinite(vol):
+                print(f"[WARN] non-finite volume for {d['label']} (idx={i}); skipping")
+                continue
+            g = estimate_grams(vol, d["label"])
 
-        area_cm2 = float(mask.sum()) * (cm_per_px ** 2)
-        avg_h_mm = float((vol / area_cm2) * 10.0) if area_cm2 > 1e-9 else 0.0
+            area_cm2 = float(mask.sum()) * (cm_per_px ** 2)
+            avg_h_mm = float((vol / area_cm2) * 10.0) if area_cm2 > 1e-9 else 0.0
 
-        # save mask preview
-        mask_path = f"{out_prefix}_mask_{i}.png"
-        mask_to_png(mask, mask_path)
+            # save mask preview
+            mask_path = f"{out_prefix}_mask_{i}.png"
+            mask_to_png(mask, mask_path)
 
-        results.append({
-            "label": d["label"],
-            "score": float(d["score"]),
-            "box": [int(v) for v in d["box"]],
-            "volume_cm3": float(vol),
-            "grams": float(g),
-        })
+            results.append({
+                "label": d["label"],
+                "score": float(d["score"]),
+                "box": [int(v) for v in d["box"]],
+                "volume_cm3": float(vol),
+                "grams": float(g),
+            })
 
-        # CSV row
-        rows.append({
-            "label": d["label"], "score": float(d["score"]),
-            "x1": int(d["box"][0]), "y1": int(d["box"][1]),
-            "x2": int(d["box"][2]), "y2": int(d["box"][3]),
-            "area_cm2": float(area_cm2),
-            "avg_height_mm": float(avg_h_mm),
-            "volume_cm3": float(vol), "grams": float(g),
-            "pixels": int(stats.get("pixels", 0)),
-            "depth_mean": float(stats.get("depth_mean", 0.0)),
-            "depth_median": float(stats.get("depth_median", 0.0)),
-            "depth_std": float(stats.get("depth_std", 0.0)),
-            "height_mean_mm": float(stats.get("height_mean_mm", 0.0)),
-            "height_median_mm": float(stats.get("height_median_mm", 0.0)),
-            "height_p95_mm": float(stats.get("height_p95_mm", 0.0)),
-            "height_max_mm": float(stats.get("height_max_mm", 0.0)),
-            "mask_png": mask_path,
-        })
+            # CSV row
+            rows.append({
+                "label": d["label"], "score": float(d["score"]),
+                "x1": int(d["box"][0]), "y1": int(d["box"][1]),
+                "x2": int(d["box"][2]), "y2": int(d["box"][3]),
+                "area_cm2": float(area_cm2),
+                "avg_height_mm": float(avg_h_mm),
+                "volume_cm3": float(vol), "grams": float(g),
+                "pixels": int(stats.get("pixels", 0)),
+                "depth_mean": float(stats.get("depth_mean", 0.0)),
+                "depth_median": float(stats.get("depth_median", 0.0)),
+                "depth_std": float(stats.get("depth_std", 0.0)),
+                "height_mean_mm": float(stats.get("height_mean_mm", 0.0)),
+                "height_median_mm": float(stats.get("height_median_mm", 0.0)),
+                "height_p95_mm": float(stats.get("height_p95_mm", 0.0)),
+                "height_max_mm": float(stats.get("height_max_mm", 0.0)),
+                "mask_png": mask_path,
+            })
 
-    # nice console summary
-    results.sort(key=lambda r: r["grams"], reverse=True)
-    for r in results:
-        print(f"[RESULT] {r['label']:<28} vol≈{r['volume_cm3']:7.1f} cm^3   "
-              f"wt≈{r['grams']:6.2f} g   box={r['box']}")
+        # nice console summary
+        results.sort(key=lambda r: r["grams"], reverse=True)
+        for r in results:
+            print(f"[RESULT] {r['label']:<28} vol≈{r['volume_cm3']:7.1f} cm^3   "
+                f"wt≈{r['grams']:6.2f} g   box={r['box']}")
 
-    # write CSV
-    if rows:
-        csv_path = out_prefix + "_objects5.csv"
-        fieldnames = [
-            "label", "score", "x1", "y1", "x2", "y2",
-            "area_cm2", "avg_height_mm", "volume_cm3", "grams",
-            "pixels", "depth_mean", "depth_median", "depth_std",
-            "height_mean_mm", "height_median_mm", "height_p95_mm", "height_max_mm",
-            "mask_png"
-        ]
-        with open(csv_path, "w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=fieldnames)
-            w.writeheader()
-            w.writerows(rows)
-        print(f"[INFO] Object stats saved to {csv_path}")
-    else:
-        print("[WARN] No rows to write; all masks skipped or invalid.")
+        # write CSV
+        if rows:
+            csv_path = out_prefix + "_objects5.csv"
+            fieldnames = [
+                "label", "score", "x1", "y1", "x2", "y2",
+                "area_cm2", "avg_height_mm", "volume_cm3", "grams",
+                "pixels", "depth_mean", "depth_median", "depth_std",
+                "height_mean_mm", "height_median_mm", "height_p95_mm", "height_max_mm",
+                "mask_png"
+            ]
+            with open(csv_path, "w", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=fieldnames)
+                w.writeheader()
+                w.writerows(rows)
+            print(f"[INFO] Object stats saved to {csv_path}")
+        else:
+            print("[WARN] No rows to write; all masks skipped or invalid.")
 
-    # 10) Save visualization (boxes + mask contours + plate box)
-    vis = draw_results(image, dets, masks=masks, plate_box=plate_box_for_draw)
-    out_path = out_prefix + "_gdino_sam_annotated5.jpg"
-    vis.save(out_path, quality=95)
-    print(f"[INFO] Saved annotated image to {out_path}")
+        # 10) Save visualization (boxes + mask contours + plate box)
+        vis = draw_results(image, dets, masks=masks, plate_box=plate_box_for_draw)
+        out_path = out_prefix + "_gdino_sam_annotated5.jpg"
+        vis.save(out_path, quality=95)
+        print(f"[INFO] Saved annotated image to {out_path}")
 
 if __name__ == "__main__":
     main()
