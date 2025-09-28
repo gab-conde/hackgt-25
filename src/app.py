@@ -13,14 +13,8 @@ cam.start()
 time.sleep(2)
 
 for i in range(2):
-    frame = cam.capture_array("main")            # BGR numpy array
-    # (optional) fix color if needed:
-    # frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)  # only if your stream is RGBA
-
-    summary, results, rows = analyze_bgr_frame(frame, models, save_prefix=None)
-    # 'summary' is exactly: [{name, volume_cm3, grams}, ...]
-
-    print("[FINAL]", summary)  # e.g. [{'name': 'hamburger bun', 'volume_cm3': 226.3, 'grams': 181.0}]
-
-    # wait for next plate
+    frame = camera.capture_array("main")          # RGB
+    frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+    results, rows = analyze_bgr_frame(frame_bgr, models, save_prefix=f"/home/pi/frame_{i}")
+    # analyze_bgr_frame now pushes to API via send_disposal_batch()
     time.sleep(10)
