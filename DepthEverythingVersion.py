@@ -10,7 +10,7 @@ import cv2
 from PIL import Image, ImageDraw, ImageFont
 from photo_socket import *
 
-DA2_REPO_DIR = "/Users/albertzheng/PyCharmMiscProject/Depth-Anything-V2"
+DA2_REPO_DIR = r"C:\Users\elith\Desktop\hackgt-repo\Depth-Anything-V2"
 if os.path.isdir(DA2_REPO_DIR) and DA2_REPO_DIR not in sys.path:
     sys.path.insert(0, DA2_REPO_DIR)
 device = "cpu"
@@ -33,17 +33,17 @@ from depth_anything_v2.dpt import DepthAnythingV2
 # ===================== PATHS / ASSETS =====================
 # IMG_SRC = "/Users/albertzheng/Downloads/hot_dog.jpg"  # <-- your image
 
-GDINO_CFG = "/Users/albertzheng/PyCharmMiscProject/weights/GroundingDINO_SwinT_OGC.cfg.py"
-GDINO_WEIGHTS = "/Users/albertzheng/PyCharmMiscProject/weights/groundingdino_swint_ogc.pth"
+GDINO_CFG = r"C:\Users\elith\Desktop\hackgt-repo\repo\scripts\GroundingDINO_SwinT_OGC.cfg.py"
+GDINO_WEIGHTS = r"C:\Users\elith\Desktop\hackgt-repo\repo\checkpoints\groundingdino_swint_ogc.pth"
 
 # SAM
-SAM_CKPT = "/Users/albertzheng/PyCharmMiscProject/weights/sam_vit_b_01ec64.pth"
+SAM_CKPT = r"C:\Users\elith\Desktop\hackgt-repo\repo\checkpoints\sam_vit_b_01ec64.pth"
 SAM_MODEL_TYPE = "vit_b"
 USE_SAM = True  # required in this pipeline
 
 # Depth-Anything V2
-DA2_MODEL_TYPE = "vitl"  # vitl | vitb | vits (match your .pth)
-DA2_CKPT = "/Users/albertzheng/PyCharmMiscProject/weights/depth_anything_v2_vitl.pth"
+DA2_MODEL_TYPE = "vitb"  # vitl | vitb | vits (match your .pth)
+DA2_CKPT = r"C:\Users\elith\Desktop\hackgt-repo\repo\checkpoints\depth_anything_v2_vitb.pth"
 
 # (Optional) plate rim height in mm for metric scaling (set to None to skip)
 KNOWN_RIM_MM = 10   # e.g., 6.5
@@ -65,7 +65,7 @@ SAM_URLS = [
 # ===================== DETECTION PROMPTS =====================
 CLASSES = [
     "paper plate",
-    "hamburger bun",
+    "hamburger patty",
     "hot dog bun",
 ]
 BOX_THR  = 0.2
@@ -721,7 +721,7 @@ def integrate_volume_cm3_over_mask_robust(h_m, mask, cm_per_px, p_hi=97.0, huber
 
 # ===================== EXPORT HELPERS =====================
 def save_depth_visuals(depth_map, h_m, out_prefix):
-    os.makedirs(os.path.dirname(out_prefix), exist_ok=True)
+    os.makedirs(os.path.dirname(out_prefix) or ".", exist_ok=True)
     np.save(out_prefix + "_depth.npy", depth_map)
     np.save(out_prefix + "_height.npy", h_m)
 
@@ -877,10 +877,10 @@ def main():
 
         # request image from pi
         IMG_SRC = get_new_image()
+        print(IMG_SRC)
         if not IMG_SRC:
             print("Failed to get image from Pi")
             return
-
 
         # Load image
         image = load_image(IMG_SRC)
