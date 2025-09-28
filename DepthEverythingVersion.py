@@ -9,6 +9,8 @@ import torch
 import cv2
 from PIL import Image, ImageDraw, ImageFont
 from photo_socket import *
+from simple_sender import send_waste_data
+
 
 DA2_REPO_DIR = r"C:\Users\elith\Desktop\hackgt-repo\Depth-Anything-V2"
 if os.path.isdir(DA2_REPO_DIR) and DA2_REPO_DIR not in sys.path:
@@ -68,8 +70,8 @@ CLASSES = [
     "hamburger patty",
     "hot dog bun",
 ]
-BOX_THR  = 0.2
-TEXT_THR = 0.2
+BOX_THR  = 0.3
+TEXT_THR = 0.3
 
 # generic/ambiguous phrases we don’t want to keep
 GENERIC = {"object", "thing", "unknown", "stuff"}
@@ -1080,6 +1082,19 @@ def main():
 
         # nice console summary
         results.sort(key=lambda r: r["grams"], reverse=True)
+        waste_data = {}
+        for r in results:
+            name = r["label"].strip()
+            grams = float(r["grams"])
+            waste_data[name] = waste_data.get(name, 0.0) + grams
+
+
+        send_waste_data(
+            waste_data,
+            "https://rixsrynryswwrjhektdf.supabase.co",  # use env vars or your constants
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJpeHNyeW5yeXN3d3JqaGVrdGRmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTg5NjQ1NDksImV4cCI6MjA3NDU0MDU0OX0.oXWRPdWt_m5tQlU7Q9oPzxkSAnC9hMDQKRvk1vNpMCA", # optional
+            )
+
         for r in results:
             print(f"[RESULT] {r['label']:<28} vol≈{r['volume_cm3']:7.1f} cm^3   "
                 f"wt≈{r['grams']:6.2f} g   box={r['box']}")
