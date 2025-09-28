@@ -17,7 +17,9 @@ time.sleep(2)
 for i in range(2):  # do 2 images for demo purposes
     # capture frame as numpy arrary
     frame = camera.capture_array("main")
-    print(frame.shape)
+    # correct the color map
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGBA)
+    # print(frame.shape)
 
     # encode image to jpg format
     # success_flag, buffer = cv2.imencode('.jpg', frame)
