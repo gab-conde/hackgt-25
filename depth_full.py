@@ -8,6 +8,8 @@ import numpy as np
 import torch
 import cv2
 from PIL import Image, ImageDraw, ImageFont
+import pandas as pd
+from simple_sender import send_waste_data
 
 DA2_REPO_DIR = "/Users/albertzheng/PyCharmMiscProject/Depth-Anything-V2"
 if os.path.isdir(DA2_REPO_DIR) and DA2_REPO_DIR not in sys.path:
@@ -28,6 +30,67 @@ except Exception:
     SAM_AVAILABLE = False
 
 from depth_anything_v2.dpt import DepthAnythingV2
+
+# ---- Waste2Taste API push ----
+# You can also set these via environment variables:
+#   export W2T_API_URL="http://<your-server>:5001"
+#   export W2T_LOCATION="raspberry_pi_north"
+W2T_API_URL = os.environ.get("W2T_API_URL", "http://localhost:5001")
+W2T_LOCATION = os.environ.get("W2T_LOCATION", "raspberry_pi")
+
+def send_disposal_single(food_name: str, disposal_mass_g: float,
+                         api_url: str = W2T_API_URL,
+                         location: str = W2T_LOCATION,
+                         session_id: str = None) -> bool:
+    """Method 1/2 from the guide: POST one item to /store-disposal-data."""
+    url = f"{api_url.rstrip('/')}/store-disposal-data"
+    payload = {
+        "food_name": food_name,
+        "disposal_mass": float(disposal_mass_g),
+        "location": location,
+    }
+    if session_id:
+        payload["session_id"] = session_id
+    try:
+        r = requests.post(url, json=payload, timeout=10)
+        if r.status_code == 200:
+            print(f"[W2T] ✅ Sent {food_name}: {disposal_mass_g:.1f} g")
+            return True
+        print(f"[W2T] ❌ {r.status_code}: {r.text}")
+        return False
+    except Exception as e:
+        print(f"[W2T] ❌ Network error: {e}")
+        return False
+
+def send_disposal_batch(results: list,
+                        api_url: str = W2T_API_URL,
+                        location: str = W2T_LOCATION,
+                        session_id: str = None) -> bool:
+    """
+    Batch version from the guide: send many items at once.
+    Expects `results` list with dicts that include 'label' and 'grams'.
+    """
+    if not results:
+        return True
+    url = f"{api_url.rstrip('/')}/store-disposal-data"
+    records = [{"food_name": r["label"], "disposal_mass": float(r["grams"])}
+               for r in results]
+    payload = {
+        "disposal_records": records,
+        "location": location,
+        "session_id": session_id or f"batch_{int(time.time())}",
+    }
+    try:
+        r = requests.post(url, json=payload, timeout=15)
+        if r.status_code == 200:
+            print(f"[W2T] ✅ Sent {len(records)} items")
+            return True
+        print(f"[W2T] ❌ {r.status_code}: {r.text}")
+        return False
+    except Exception as e:
+        print(f"[W2T] ❌ Network error: {e}")
+        return False
+
 
 # ===================== PATHS / ASSETS =====================
 IMG_SRC = "/Users/albertzheng/Downloads/hot_dog.jpg"  # <-- your image
@@ -1084,6 +1147,18 @@ def main():
 
     # nice console summary
     results.sort(key=lambda r: r["grams"], reverse=True)
+    waste_data = {}
+    for r in results:
+        name = r["label"].strip()
+        grams = float(r["grams"])
+        waste_data[name] = waste_data.get(name, 0.0) + grams
+
+    send_waste_data(
+        waste_data,
+        "https://rixsrynryswwrjhektdf.supabase.co",  # use env vars or your constants
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJpeHNyeW5yeXN3d3JqaGVrdGRmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTg5NjQ1NDksImV4cCI6MjA3NDU0MDU0OX0.oXWRPdWt_m5tQlU7Q9oPzxkSAnC9hMDQKRvk1vNpMCA", # optional
+    )
+    print("hi")
     for r in results:
         print(f"[RESULT] {r['label']:<28} vol≈{r['volume_cm3']:7.1f} cm^3   "
               f"wt≈{r['grams']:6.2f} g   box={r['box']}")
@@ -1267,8 +1342,24 @@ def analyze_pil(image: Image.Image, models: dict, save_prefix: str = None):
         })
 
     results.sort(key=lambda r: r["grams"], reverse=True)
-    summary = summarize_results(results)
-    return summary, results, rows
+    # --- SEND TO WASTE2TASTE API ---
+    # results = [{"label": "...", "grams": 123.4, ...}, ...]
+    # --- SEND TO WASTE2TASTE API (batch) ---
+    _sess = f"frame_{int(time.time())}"
+    waste_data = {}
+    for r in results:
+        name = r["label"].strip()
+        grams = float(r["grams"])
+        waste_data[name] = waste_data.get(name, 0.0) + grams
+
+    send_waste_data(
+        waste_data,
+        "https://rixsrynryswwrjhektdf.supabase.co",  # use env vars or your constants
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJpeHNyeW5yeXN3d3JqaGVrdGRmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTg5NjQ1NDksImV4cCI6MjA3NDU0MDU0OX0.oXWRPdWt_m5tQlU7Q9oPzxkSAnC9hMDQKRvk1vNpMCA", # optional
+    )
+    print("hi")
+    results.sort(key=lambda r: r["grams"], reverse=True)
+    return results, rows
 
 
 def analyze_bgr_frame(frame_bgr: np.ndarray, models: dict, save_prefix: str = None):
