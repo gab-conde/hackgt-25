@@ -1,4 +1,4 @@
-# hackgt-25
+# Waste2Taste
 
 ## HackGT 2025 Demo
 
